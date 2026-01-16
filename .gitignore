@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# Media Files (Privacy Protection!) 🛡️
+# GitHubにえっちなファイルを上げないようにねっ！
+input/
+output/
+tmp/
+samples/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+
+# Logs
+*.log
