@@ -3,6 +3,7 @@ import sys
 import uuid
 import json
 import subprocess
+import magic
 from PIL import Image
 from datetime import datetime
 
@@ -97,7 +98,7 @@ def sanitize_video(input_path, output_path):
     try:
         # L3 Defense: Full Transcode with Explicit Stream Mapping
         cmd = [
-            'ffmpeg', '-y',
+            'ffmpeg', '-y', '-nostdin',
             '-i', input_path,
             '-map', '0:v:0',       # Pick first video stream
             '-map', '0:a:0?',      # Pick first audio stream (optional if exists)
@@ -130,10 +131,11 @@ def sanitize_gif(input_path, output_path):
     try:
         # Use ffmpeg to process GIF as video
         cmd = [
-            'ffmpeg', '-y',
+            'ffmpeg', '-y', '-nostdin',
             '-i', input_path,
             '-map', '0:v:0',       # Pick video (GIF is valid video stream)
             '-map_metadata', '-1',
+            '-f', 'gif',
             output_path
         ]
         

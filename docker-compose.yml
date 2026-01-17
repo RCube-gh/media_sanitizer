@@ -14,5 +14,14 @@ services:
       resources:
         limits:
           memory: 2G
+          pids: 128
+    # S-Grade Security Hardening 🔒
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     # Keep container alive for debugging if needed, or just let it run the CMD
     # command: python sanitizer.py
