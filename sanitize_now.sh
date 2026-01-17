@@ -12,7 +12,7 @@ echo
 echo "[INFO] Starting Docker environment..."
 echo "--------------------------------------------------------"
 
-docker-compose up --build --abort-on-container-exit
+docker compose up --build --abort-on-container-exit
 
 echo "--------------------------------------------------------"
 echo
