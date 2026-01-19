@@ -111,7 +111,7 @@ def sanitize_video(input_path, output_path):
         ]
         
         # Run subprocess
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
         
         if result.returncode == 0:
             log_event("SUCCESS", "Video sanitized successfully", {"input": input_path, "output": output_path})
@@ -121,7 +121,12 @@ def sanitize_video(input_path, output_path):
             return False
 
     except subprocess.TimeoutExpired:
-        log_event("SECURITY", "Video processing timed out (Possible DoS)", {"file": input_path})
+        log_event("SECURITY", f"Video processing timed out (Possible DoS) - Cleaning up partial file", {"file": input_path})
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError as e:
+                log_event("ERROR", f"Failed to remove partial file: {e}", {"file": output_path})
         return False
     except Exception as e:
         log_event("ERROR", f"Video unexpected error: {e}", {"file": input_path})
@@ -139,7 +144,7 @@ def sanitize_gif(input_path, output_path):
             output_path
         ]
         
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
         
         if result.returncode == 0:
             log_event("SUCCESS", "GIF sanitized successfully (Animation preserved)", {"input": input_path, "output": output_path})
@@ -149,7 +154,12 @@ def sanitize_gif(input_path, output_path):
             return False
 
     except subprocess.TimeoutExpired:
-        log_event("SECURITY", "GIF processing timed out", {"file": input_path})
+        log_event("SECURITY", "GIF processing timed out - Cleaning up partial file", {"file": input_path})
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError as e:
+                log_event("ERROR", f"Failed to remove partial file: {e}", {"file": output_path})
         return False
     except Exception as e:
         log_event("ERROR", f"GIF unexpected error: {e}", {"file": input_path})
