@@ -119,7 +119,7 @@ def sanitize_video(input_path, output_path):
             '-map_metadata', '-1',
             '-map_chapters', '-1',
             '-c:v', 'libx264',
-            '-preset', 'fast',
+            '-preset', 'ultrafast',
             '-c:a', 'aac',
             output_path
         ]
@@ -136,12 +136,18 @@ def sanitize_video(input_path, output_path):
         start_time = time.time()
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
         
+        if duration:
+            # Allow for slow processing (up to 5x real-time in worst case, or at least 1 hour)
+            timeout_limit = max(3600, duration * 5)
+        else:
+            timeout_limit = 3600 # Default 1 hour if duration unknown
+
         while True:
             # Check timeout
-            if time.time() - start_time > 600:
+            if time.time() - start_time > timeout_limit:
                 process.kill()
                 if pbar: pbar.close()
-                log_event("SECURITY", f"Video processing timed out (Possible DoS) - Cleaning up", {"file": input_path})
+                log_event("SECURITY", f"Video processing timed out ({timeout_limit}s limit) - Cleaning up", {"file": input_path})
                 if os.path.exists(output_path):
                     try: os.remove(output_path)
                     except: pass
