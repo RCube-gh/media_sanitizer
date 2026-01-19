@@ -273,8 +273,14 @@ def process_file(filename, pbar_pos=0):
         return
 
     # 3. Sanitize based on type
-    # Generate safe output filename (UUID)
-    safe_name = str(uuid.uuid4())
+    # Use original filename but sanitized to be safe
+    base_name = os.path.basename(filename)
+    # Allow alphanumeric, dot, underscore, hyphen. Replace others with underscore.
+    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', os.path.splitext(base_name)[0])
+    
+    # Ensure safe_name is not empty
+    if not safe_name:
+        safe_name = "sanitized_file_" + str(uuid.uuid4())[:8]
     
     is_video = mime_type.startswith('video/')
     is_image = mime_type.startswith('image/')
