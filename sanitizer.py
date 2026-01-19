@@ -4,6 +4,9 @@ import uuid
 import json
 import subprocess
 import magic
+import re
+import time
+from tqdm import tqdm
 from PIL import Image
 from datetime import datetime
 
@@ -59,6 +62,18 @@ def get_mime_type(filepath):
         return mime.from_file(filepath)
     except Exception as e:
         log_event("ERROR", f"Failed to detect MIME type: {e}")
+def get_video_duration(input_path):
+    cmd = [
+        'ffprobe', 
+        '-v', 'error', 
+        '-show_entries', 'format=duration', 
+        '-of', 'default=noprint_wrappers=1:nokey=1', 
+        input_path
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        return float(result.stdout.strip())
+    except (ValueError, subprocess.SubprocessError):
         return None
 
 def sanitize_image(input_path, output_path):
@@ -96,71 +111,124 @@ def sanitize_image(input_path, output_path):
 
 def sanitize_video(input_path, output_path):
     try:
-        # L3 Defense: Full Transcode with Explicit Stream Mapping
         cmd = [
             'ffmpeg', '-y', '-nostdin',
             '-i', input_path,
-            '-map', '0:v:0',       # Pick first video stream
-            '-map', '0:a:0?',      # Pick first audio stream (optional if exists)
-            '-map_metadata', '-1', # Strip global metadata
-            '-map_chapters', '-1', # Strip chapters
-            '-c:v', 'libx264',     # Re-encode Video
+            '-map', '0:v:0',
+            '-map', '0:a:0?',
+            '-map_metadata', '-1',
+            '-map_chapters', '-1',
+            '-c:v', 'libx264',
             '-preset', 'fast',
-            '-c:a', 'aac',         # Re-encode Audio
+            '-c:a', 'aac',
             output_path
         ]
         
-        # Run subprocess
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+        duration = get_video_duration(input_path)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
         
-        if result.returncode == 0:
+        pbar = None
+        if duration:
+            pbar = tqdm(total=duration, unit="s", desc=f"  Sanitizing Video", ncols=80, leave=False)
+        else:
+            pbar = tqdm(unit="s", desc=f"  Sanitizing Video (Unknown Duration)", ncols=80, leave=False)
+
+        start_time = time.time()
+        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+        
+        while True:
+            # Check timeout
+            if time.time() - start_time > 600:
+                process.kill()
+                if pbar: pbar.close()
+                log_event("SECURITY", f"Video processing timed out (Possible DoS) - Cleaning up", {"file": input_path})
+                if os.path.exists(output_path):
+                    try: os.remove(output_path)
+                    except: pass
+                return False
+
+            line = process.stderr.readline()
+            if not line and process.poll() is not None:
+                break
+            
+            if line:
+                match = time_pattern.search(line)
+                if match and pbar and duration:
+                    h, m, s = match.groups()
+                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    pbar.n = min(current_seconds, duration)
+                    pbar.refresh()
+
+        if pbar: pbar.close()
+        
+        if process.returncode == 0:
             log_event("SUCCESS", "Video sanitized successfully", {"input": input_path, "output": output_path})
             return True
         else:
-            log_event("ERROR", f"Video sanitization failed: {result.stderr.decode()}", {"file": input_path})
+            # Consume remaining stderr if any
+            err_output = process.stderr.read()
+            log_event("ERROR", f"Video sanitization failed: {err_output}", {"file": input_path})
             return False
 
-    except subprocess.TimeoutExpired:
-        log_event("SECURITY", f"Video processing timed out (Possible DoS) - Cleaning up partial file", {"file": input_path})
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except OSError as e:
-                log_event("ERROR", f"Failed to remove partial file: {e}", {"file": output_path})
-        return False
     except Exception as e:
         log_event("ERROR", f"Video unexpected error: {e}", {"file": input_path})
         return False
 
 def sanitize_gif(input_path, output_path):
     try:
-        # Use ffmpeg to process GIF as video
         cmd = [
             'ffmpeg', '-y', '-nostdin',
             '-i', input_path,
-            '-map', '0:v:0',       # Pick video (GIF is valid video stream)
+            '-map', '0:v:0',
             '-map_metadata', '-1',
             '-f', 'gif',
             output_path
         ]
         
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+        # GIFs can be treated as videos
+        duration = get_video_duration(input_path)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
         
-        if result.returncode == 0:
-            log_event("SUCCESS", "GIF sanitized successfully (Animation preserved)", {"input": input_path, "output": output_path})
+        pbar = None
+        if duration:
+            pbar = tqdm(total=duration, unit="s", desc=f"  Sanitizing GIF", ncols=80, leave=False)
+        else:
+            pbar = tqdm(unit="s", desc=f"  Sanitizing GIF", ncols=80, leave=False)
+
+        start_time = time.time()
+        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+        
+        while True:
+             if time.time() - start_time > 300:
+                process.kill()
+                if pbar: pbar.close()
+                log_event("SECURITY", "GIF processing timed out - Cleaning up", {"file": input_path})
+                if os.path.exists(output_path):
+                    try: os.remove(output_path)
+                    except: pass
+                return False
+
+             line = process.stderr.readline()
+             if not line and process.poll() is not None:
+                break
+            
+             if line:
+                match = time_pattern.search(line)
+                if match and pbar and duration:
+                    h, m, s = match.groups()
+                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    pbar.n = min(current_seconds, duration)
+                    pbar.refresh()
+        
+        if pbar: pbar.close()
+
+        if process.returncode == 0:
+            log_event("SUCCESS", "GIF sanitized successfully", {"input": input_path, "output": output_path})
             return True
         else:
-            log_event("ERROR", f"GIF sanitization failed: {result.stderr.decode()}", {"file": input_path})
-            return False
+             log_event("ERROR", f"GIF sanitization failed", {"file": input_path})
+             return False
 
-    except subprocess.TimeoutExpired:
-        log_event("SECURITY", "GIF processing timed out - Cleaning up partial file", {"file": input_path})
-        if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-            except OSError as e:
-                log_event("ERROR", f"Failed to remove partial file: {e}", {"file": output_path})
-        return False
     except Exception as e:
         log_event("ERROR", f"GIF unexpected error: {e}", {"file": input_path})
         return False
