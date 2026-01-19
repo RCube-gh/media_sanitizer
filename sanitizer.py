@@ -9,6 +9,8 @@ import time
 from tqdm import tqdm
 from PIL import Image
 from datetime import datetime
+import queue
+import concurrent.futures
 
 # Configuration
 INPUT_DIR = '/app/input'
@@ -16,6 +18,7 @@ OUTPUT_DIR = '/app/output'
 LOG_FILE = '/app/output/processing_log.json'
 MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024 # 2GB
 MAX_IMAGE_PIXELS = 200 * 1000 * 1000 # 200MP
+MAX_WORKERS = 2
 
 # Safety: Prevent decompression bombs
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
@@ -47,14 +50,16 @@ def log_event(event_type, message, file_info=None):
         elif "mime" in file_info:
              console_msg += f" ({file_info.get('mime', 'Unknown')})"
 
-    print(console_msg)
+    # Use tqdm.write to avoid interfering with progress bars
+    tqdm.write(console_msg)
 
     # Append to log file
     try:
         with open(LOG_FILE, 'a') as f:
             f.write(json.dumps(entry) + '\n')
     except Exception as e:
-        print(f"FATAL: Could not write to log file: {e}")
+        # tqdm.write(f"FATAL: Could not write to log file: {e}")
+        pass
 
 def get_mime_type(filepath):
     try:
@@ -62,6 +67,8 @@ def get_mime_type(filepath):
         return mime.from_file(filepath)
     except Exception as e:
         log_event("ERROR", f"Failed to detect MIME type: {e}")
+        return None
+
 def get_video_duration(input_path):
     cmd = [
         'ffprobe', 
@@ -109,7 +116,7 @@ def sanitize_image(input_path, output_path):
         log_event("ERROR", f"Image sanitization failed: {e}", {"file": input_path})
         return False
 
-def sanitize_video(input_path, output_path):
+def sanitize_video(input_path, output_path, pbar_pos=0):
     try:
         cmd = [
             'ffmpeg', '-y', '-nostdin',
@@ -119,7 +126,8 @@ def sanitize_video(input_path, output_path):
             '-map_metadata', '-1',
             '-map_chapters', '-1',
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
+            '-preset', 'slow',
+            '-crf', '23',
             '-c:a', 'aac',
             output_path
         ]
@@ -127,11 +135,12 @@ def sanitize_video(input_path, output_path):
         duration = get_video_duration(input_path)
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
         
+        filename = os.path.basename(input_path)
         pbar = None
         if duration:
-            pbar = tqdm(total=duration, unit="s", desc=f"  Sanitizing Video", ncols=80, leave=False)
+            pbar = tqdm(total=duration, unit="s", desc=f"Video ({filename[:10]}...)", ncols=80, leave=True, position=pbar_pos)
         else:
-            pbar = tqdm(unit="s", desc=f"  Sanitizing Video (Unknown Duration)", ncols=80, leave=False)
+            pbar = tqdm(unit="s", desc=f"Video ({filename[:10]}...)", ncols=80, leave=True, position=pbar_pos)
 
         start_time = time.time()
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
@@ -180,7 +189,7 @@ def sanitize_video(input_path, output_path):
         log_event("ERROR", f"Video unexpected error: {e}", {"file": input_path})
         return False
 
-def sanitize_gif(input_path, output_path):
+def sanitize_gif(input_path, output_path, pbar_pos=0):
     try:
         cmd = [
             'ffmpeg', '-y', '-nostdin',
@@ -195,11 +204,12 @@ def sanitize_gif(input_path, output_path):
         duration = get_video_duration(input_path)
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
         
+        filename = os.path.basename(input_path)
         pbar = None
         if duration:
-            pbar = tqdm(total=duration, unit="s", desc=f"  Sanitizing GIF", ncols=80, leave=False)
+            pbar = tqdm(total=duration, unit="s", desc=f"GIF ({filename[:10]}...)", ncols=80, leave=True, position=pbar_pos)
         else:
-            pbar = tqdm(unit="s", desc=f"  Sanitizing GIF", ncols=80, leave=False)
+            pbar = tqdm(unit="s", desc=f"GIF ({filename[:10]}...)", ncols=80, leave=True, position=pbar_pos)
 
         start_time = time.time()
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
@@ -239,7 +249,7 @@ def sanitize_gif(input_path, output_path):
         log_event("ERROR", f"GIF unexpected error: {e}", {"file": input_path})
         return False
 
-def process_file(filename):
+def process_file(filename, pbar_pos=0):
     input_path = os.path.join(INPUT_DIR, filename)
     
     # Ignore hidden files or directories
@@ -273,12 +283,12 @@ def process_file(filename):
         if mime_type == 'image/gif':
              output_filename = f"{safe_name}.gif"
              output_path = os.path.join(OUTPUT_DIR, output_filename)
-             sanitize_gif(input_path, output_path)
+             sanitize_gif(input_path, output_path, pbar_pos)
         
         elif is_video:
             output_filename = f"{safe_name}.mp4"
             output_path = os.path.join(OUTPUT_DIR, output_filename)
-            sanitize_video(input_path, output_path)
+            sanitize_video(input_path, output_path, pbar_pos)
             
         elif is_image:
             # Determine extension from MIME or original
@@ -299,7 +309,7 @@ def process_file(filename):
         log_event("ERROR", f"Unhandled exception during processing: {e}", {"file": filename})
 
 def main():
-    log_event("SYSTEM", "Sanitizer started")
+    log_event("SYSTEM", f"Sanitizer started (Max Workers: {MAX_WORKERS})")
     
     # Check if input dir exists
     if not os.path.exists(INPUT_DIR):
@@ -309,11 +319,27 @@ def main():
     # Iterate over files in input
     try:
         files = os.listdir(INPUT_DIR)
-        if not files:
+        valid_files = [f for f in files if not f.startswith('.') and not os.path.isdir(os.path.join(INPUT_DIR, f))]
+        
+        if not valid_files:
             log_event("INFO", "No files found in input directory")
-            
-        for filename in files:
-            process_file(filename)
+            return
+        
+        # Worker Slot Queue [0, 1, ... MAX_WORKERS-1]
+        slot_queue = queue.Queue()
+        for i in range(MAX_WORKERS):
+            slot_queue.put(i)
+
+        def worker_wrapper(filename):
+             slot = slot_queue.get()
+             try:
+                 process_file(filename, pbar_pos=slot)
+             finally:
+                 slot_queue.put(slot)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            executor.map(worker_wrapper, valid_files)
+
     except Exception as e:
         log_event("ERROR", f"Main loop failed: {e}")
 
