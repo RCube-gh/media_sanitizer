@@ -12,7 +12,8 @@ echo
 echo "[INFO] Starting Docker environment..."
 echo "--------------------------------------------------------"
 
-docker compose up --build --abort-on-container-exit
+docker compose build
+docker compose run --rm sanitizer
 
 echo "--------------------------------------------------------"
 echo

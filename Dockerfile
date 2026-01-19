@@ -26,4 +26,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Run the sanitizer script
-CMD ["python", "sanitizer.py"]
+CMD ["python", "-u", "sanitizer.py"]

@@ -6,12 +6,13 @@ echo   🛡️  Media Sanitizer - Moca's Purity Filter 🌸
 echo ========================================================
 echo.
 echo  [INFO] Starting sanitization process...
-echo  [INFO] Target: ./input -> ./output
+echo  [INFO] Target: ./input -^> ./output
 echo.
 echo  Starting Docker environment...
 echo --------------------------------------------------------
 
-docker-compose up --build
+docker compose build
+docker compose run --rm sanitizer
 
 echo --------------------------------------------------------
 echo.
