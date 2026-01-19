@@ -7,7 +7,7 @@ services:
     network_mode: none # 🛡️ COMPLETE ISOLATION
     volumes:
       - ./input:/app/input:ro # Read-only input
-      - ./output:/app/output # Write-only output
+      - ./output:/app/output:rw # Write-only output
       # Mount the script for easier development/testing without rebuilding
       - ./sanitizer.py:/app/sanitizer.py:ro
     deploy:
