@@ -189,6 +189,73 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
         log_event("ERROR", f"Video unexpected error: {e}", {"file": input_path})
         return False
 
+def sanitize_audio(input_path, output_path, pbar_pos=0):
+    try:
+        cmd = [
+            'ffmpeg', '-y', '-nostdin',
+            '-i', input_path,
+            '-map', '0:a:0',       # Pick first audio stream
+            '-map_metadata', '-1', # Strip metadata
+            '-c:a', 'aac',         # Re-encode Audio to AAC
+            '-b:a', '192k',        # Good quality bitrate
+            output_path
+        ]
+        
+        duration = get_video_duration(input_path)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
+        
+        filename = os.path.basename(input_path)
+        pbar = None
+        if duration:
+            pbar = tqdm(total=duration, unit="s", desc=f"Audio ({filename[:10]}...)", ncols=80, leave=True, position=pbar_pos)
+        else:
+            pbar = tqdm(unit="s", desc=f"Audio ({filename[:10]}...)", ncols=80, leave=True, position=pbar_pos)
+
+        start_time = time.time()
+        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+        
+        if duration:
+            timeout_limit = max(3600, duration * 5)
+        else:
+            timeout_limit = 3600
+
+        while True:
+            # Check timeout
+            if time.time() - start_time > timeout_limit:
+                process.kill()
+                if pbar: pbar.close()
+                log_event("SECURITY", f"Audio processing timed out ({timeout_limit}s limit) - Cleaning up", {"file": input_path})
+                if os.path.exists(output_path):
+                    try: os.remove(output_path)
+                    except: pass
+                return False
+
+            line = process.stderr.readline()
+            if not line and process.poll() is not None:
+                break
+            
+            if line:
+                match = time_pattern.search(line)
+                if match and pbar and duration:
+                    h, m, s = match.groups()
+                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    pbar.n = min(current_seconds, duration)
+                    pbar.refresh()
+
+        if pbar: pbar.close()
+        
+        if process.returncode == 0:
+            log_event("SUCCESS", "Audio sanitized successfully", {"input": input_path, "output": output_path})
+            return True
+        else:
+            err_output = process.stderr.read()
+            log_event("ERROR", f"Audio sanitization failed: {err_output}", {"file": input_path})
+            return False
+
+    except Exception as e:
+        log_event("ERROR", f"Audio unexpected error: {e}", {"file": input_path})
+        return False
+
 def sanitize_gif(input_path, output_path, pbar_pos=0):
     try:
         cmd = [
@@ -249,70 +316,71 @@ def sanitize_gif(input_path, output_path, pbar_pos=0):
         log_event("ERROR", f"GIF unexpected error: {e}", {"file": input_path})
         return False
 
-def process_file(filename, pbar_pos=0):
-    input_path = os.path.join(INPUT_DIR, filename)
+def process_file(rel_path, pbar_pos=0):
+    input_path = os.path.join(INPUT_DIR, rel_path)
     
-    # Ignore hidden files or directories
-    if filename.startswith('.') or os.path.isdir(input_path):
+    # Safety check (though main filter already does this)
+    if os.path.isdir(input_path):
         return
 
-    log_event("INFO", "Processing file", {"file": filename})
+    log_event("INFO", "Processing file", {"file": rel_path})
     
     # 1. Resource Check (File Size)
     file_size = os.path.getsize(input_path)
     if file_size > MAX_FILE_SIZE_BYTES:
-        log_event("SECURITY", f"File size exceeds limit ({file_size} bytes)", {"file": filename})
+        log_event("SECURITY", f"File size exceeds limit ({file_size} bytes)", {"file": rel_path})
         return
 
     # 2. Diagnosis / Type Check
     mime_type = get_mime_type(input_path)
-    log_event("INFO", f"Detected MIME type: {mime_type}", {"file": filename})
-    
     if not mime_type:
-        log_event("ERROR", "Could not detect MIME type", {"file": filename})
+        log_event("ERROR", "Could not detect MIME type", {"file": rel_path})
         return
 
-    # 3. Sanitize based on type
-    # Use original filename but sanitized to be safe
-    base_name = os.path.basename(filename)
-    # Allow alphanumeric, dot, underscore, hyphen. Replace others with underscore.
-    safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', os.path.splitext(base_name)[0])
+    # 3. Prepare Output Path
+    # Maintain directory structure
+    rel_dir = os.path.dirname(rel_path)
+    base_name = os.path.basename(rel_path)
     
-    # Ensure safe_name is not empty
-    if not safe_name:
-        safe_name = "sanitized_file_" + str(uuid.uuid4())[:8]
+    # Sanitize the filename part (preserving safety)
+    safe_base = re.sub(r'[^a-zA-Z0-9._-]', '_', os.path.splitext(base_name)[0])
+    if not safe_base:
+        safe_base = "sanitized_" + str(uuid.uuid4())[:8]
+    
+    target_dir = os.path.join(OUTPUT_DIR, rel_dir)
+    os.makedirs(target_dir, exist_ok=True)
     
     is_video = mime_type.startswith('video/')
     is_image = mime_type.startswith('image/')
+    is_audio = mime_type.startswith('audio/')
     
     try:
         if mime_type == 'image/gif':
-             output_filename = f"{safe_name}.gif"
-             output_path = os.path.join(OUTPUT_DIR, output_filename)
+             output_path = os.path.join(target_dir, f"{safe_base}.gif")
              sanitize_gif(input_path, output_path, pbar_pos)
         
         elif is_video:
-            output_filename = f"{safe_name}.mp4"
-            output_path = os.path.join(OUTPUT_DIR, output_filename)
+            output_path = os.path.join(target_dir, f"{safe_base}.mp4")
             sanitize_video(input_path, output_path, pbar_pos)
             
         elif is_image:
-            # Determine extension from MIME or original
-            # For PoC, let's keep original extension to avoid confusion, provided it's safe
-            ext = os.path.splitext(filename)[1].lower()
+            ext = os.path.splitext(base_name)[1].lower()
             if not ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
-                 ext = '.png' # Fallback
+                 ext = '.png'
             
-            output_filename = f"{safe_name}{ext}"
-            output_path = os.path.join(OUTPUT_DIR, output_filename)
+            output_path = os.path.join(target_dir, f"{safe_base}{ext}")
             sanitize_image(input_path, output_path)
+
+        elif is_audio:
+            output_path = os.path.join(target_dir, f"{safe_base}.m4a")
+            sanitize_audio(input_path, output_path, pbar_pos)
             
         else:
-            log_event("WARNING", "Unsupported file type, skipping", {"file": filename, "mime": mime_type})
+            log_event("WARNING", "Unsupported file type, skipping", {"file": rel_path, "mime": mime_type})
     except Image.DecompressionBombError:
-        log_event("SECURITY", "Decompression bomb detected (Image too large)", {"file": filename})
+        log_event("SECURITY", "Decompression bomb detected (Image too large)", {"file": rel_path})
     except Exception as e:
-        log_event("ERROR", f"Unhandled exception during processing: {e}", {"file": filename})
+        log_event("ERROR", f"Unhandled exception during processing: {e}", {"file": rel_path})
 
 def main():
     log_event("SYSTEM", f"Sanitizer started (Max Workers: {MAX_WORKERS})")
@@ -322,29 +390,37 @@ def main():
         log_event("ERROR", "Input directory not found")
         return
 
-    # Iterate over files in input
+    # Iterate over files in input recursively
+    task_files = []
     try:
-        files = os.listdir(INPUT_DIR)
-        valid_files = [f for f in files if not f.startswith('.') and not os.path.isdir(os.path.join(INPUT_DIR, f))]
+        for root, dirs, files in os.walk(INPUT_DIR):
+            for f in files:
+                if not f.startswith('.'):
+                    # Calculate path relative to INPUT_DIR
+                    rel_path = os.path.relpath(os.path.join(root, f), INPUT_DIR)
+                    task_files.append(rel_path)
         
-        if not valid_files:
+        if not task_files:
             log_event("INFO", "No files found in input directory")
             return
         
+        # Sort files to process them in a predictable order
+        task_files.sort()
+
         # Worker Slot Queue [0, 1, ... MAX_WORKERS-1]
         slot_queue = queue.Queue()
         for i in range(MAX_WORKERS):
             slot_queue.put(i)
 
-        def worker_wrapper(filename):
+        def worker_wrapper(rel_path):
              slot = slot_queue.get()
              try:
-                 process_file(filename, pbar_pos=slot)
+                 process_file(rel_path, pbar_pos=slot)
              finally:
                  slot_queue.put(slot)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            executor.map(worker_wrapper, valid_files)
+            executor.map(worker_wrapper, task_files)
 
     except Exception as e:
         log_event("ERROR", f"Main loop failed: {e}")
