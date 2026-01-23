@@ -126,7 +126,7 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
             '-map_metadata', '-1',
             '-map_chapters', '-1',
             '-c:v', 'libx264',
-            '-preset', 'slow',
+            '-preset', 'medium',
             '-crf', '23',
             '-c:a', 'aac',
             output_path
