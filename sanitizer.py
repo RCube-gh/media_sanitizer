@@ -27,6 +27,8 @@ stats = {
     "success": 0,
     "failed": [], # List of (filename, reason)
     "skipped": 0,
+    "ignored": 0, # Count
+    "ignored_files": [], # List of filenames
     "types": {
         "image": 0,
         "video": 0,
@@ -437,6 +439,10 @@ def process_file(rel_path, pbar_pos=0):
             stats["success"] += 1
             if output_path and os.path.exists(output_path):
                 stats["sanitized_size"] += os.path.getsize(output_path)
+    elif cat == "other":
+        with stats_lock:
+            stats["ignored"] += 1
+            stats["ignored_files"].append(rel_path)
     else:
         with stats_lock:
             stats["failed"].append((rel_path, error_reason))
@@ -497,6 +503,7 @@ def main():
         f"📁 Files Processed: {stats['total']}",
         f"   ✅ Success  : {stats['success']}",
         f"   ⚠️ Skipped  : {stats['skipped']}",
+        f"   🚫 Ignored  : {stats['ignored']} (Non-media)",
         f"   ❌ Failed   : {len(stats['failed']) - stats['skipped']}",
         "",
         "🎞️ Media Breakdown:",
@@ -512,6 +519,15 @@ def main():
         f"⏱️ Time Elapsed: {mins}m {secs}s",
         "========================================================"
     ]
+
+    # Add ignored details if any
+    if stats['ignored_files']:
+        report.append("🚫 Ignored Files (Non-media):")
+        for name in stats['ignored_files'][:10]:
+            report.append(f"   • {name}")
+        if len(stats['ignored_files']) > 10:
+            report.append(f"   ... and {len(stats['ignored_files']) - 10} more.")
+        report.append("========================================================")
 
     # Add failure details if any
     actual_failures = [f for f in stats['failed'] if "exceeds limit" not in f[1]]
