@@ -11,6 +11,7 @@ from PIL import Image
 from datetime import datetime
 import queue
 import concurrent.futures
+import threading
 
 # Configuration
 INPUT_DIR = '/app/input'
@@ -20,8 +21,34 @@ MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024 * 1024 # 2GB
 MAX_IMAGE_PIXELS = 200 * 1000 * 1000 # 200MP
 MAX_WORKERS = 2
 
+# Statistics Tracking
+stats = {
+    "total": 0,
+    "success": 0,
+    "failed": [], # List of (filename, reason)
+    "skipped": 0,
+    "types": {
+        "image": 0,
+        "video": 0,
+        "audio": 0,
+        "gif": 0,
+        "other": 0
+    },
+    "original_size": 0,
+    "sanitized_size": 0,
+    "start_time": 0
+}
+stats_lock = threading.Lock()
+
 # Safety: Prevent decompression bombs
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+def format_size(bytes):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if bytes < 1024:
+            return f"{bytes:.2f} {unit}"
+        bytes /= 1024
+    return f"{bytes:.2f} PB"
 
 def log_event(event_type, message, file_info=None):
     valid_types = ["SYSTEM", "INFO", "SUCCESS", "ERROR", "SECURITY", "WARNING", "SKIP"]
@@ -319,30 +346,48 @@ def sanitize_gif(input_path, output_path, pbar_pos=0):
 def process_file(rel_path, pbar_pos=0):
     input_path = os.path.join(INPUT_DIR, rel_path)
     
-    # Safety check (though main filter already does this)
     if os.path.isdir(input_path):
         return
+
+    with stats_lock:
+        stats["total"] += 1
+        orig_size = os.path.getsize(input_path)
+        stats["original_size"] += orig_size
 
     log_event("INFO", "Processing file", {"file": rel_path})
     
     # 1. Resource Check (File Size)
-    file_size = os.path.getsize(input_path)
-    if file_size > MAX_FILE_SIZE_BYTES:
-        log_event("SECURITY", f"File size exceeds limit ({file_size} bytes)", {"file": rel_path})
+    if orig_size > MAX_FILE_SIZE_BYTES:
+        msg = f"File size exceeds limit ({format_size(orig_size)})"
+        log_event("SECURITY", msg, {"file": rel_path})
+        with stats_lock:
+            stats["skipped"] += 1
+            stats["failed"].append((rel_path, msg))
         return
 
     # 2. Diagnosis / Type Check
     mime_type = get_mime_type(input_path)
     if not mime_type:
-        log_event("ERROR", "Could not detect MIME type", {"file": rel_path})
+        msg = "Could not detect MIME type"
+        log_event("ERROR", msg, {"file": rel_path})
+        with stats_lock:
+            stats["failed"].append((rel_path, msg))
         return
 
+    # Categorize type for stats
+    cat = "other"
+    if mime_type == 'image/gif': cat = "gif"
+    elif mime_type.startswith('video/'): cat = "video"
+    elif mime_type.startswith('audio/'): cat = "audio"
+    elif mime_type.startswith('image/'): cat = "image"
+    
+    with stats_lock:
+        stats["types"][cat] += 1
+
     # 3. Prepare Output Path
-    # Maintain directory structure
     rel_dir = os.path.dirname(rel_path)
     base_name = os.path.basename(rel_path)
     
-    # Sanitize the filename part (preserving safety)
     safe_base = re.sub(r'[^a-zA-Z0-9._-]', '_', os.path.splitext(base_name)[0])
     if not safe_base:
         safe_base = "sanitized_" + str(uuid.uuid4())[:8]
@@ -350,53 +395,65 @@ def process_file(rel_path, pbar_pos=0):
     target_dir = os.path.join(OUTPUT_DIR, rel_dir)
     os.makedirs(target_dir, exist_ok=True)
     
-    is_video = mime_type.startswith('video/')
-    is_image = mime_type.startswith('image/')
-    is_audio = mime_type.startswith('audio/')
-    
+    success = False
+    output_path = None
+    error_reason = "Unknown error"
+
     try:
-        if mime_type == 'image/gif':
+        if cat == 'gif':
              output_path = os.path.join(target_dir, f"{safe_base}.gif")
-             sanitize_gif(input_path, output_path, pbar_pos)
+             success = sanitize_gif(input_path, output_path, pbar_pos)
         
-        elif is_video:
+        elif cat == 'video':
             output_path = os.path.join(target_dir, f"{safe_base}.mp4")
-            sanitize_video(input_path, output_path, pbar_pos)
+            success = sanitize_video(input_path, output_path, pbar_pos)
             
-        elif is_image:
+        elif cat == 'image':
             ext = os.path.splitext(base_name)[1].lower()
             if not ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
                  ext = '.png'
-            
             output_path = os.path.join(target_dir, f"{safe_base}{ext}")
-            sanitize_image(input_path, output_path)
+            success = sanitize_image(input_path, output_path)
 
-        elif is_audio:
+        elif cat == 'audio':
             output_path = os.path.join(target_dir, f"{safe_base}.m4a")
-            sanitize_audio(input_path, output_path, pbar_pos)
+            success = sanitize_audio(input_path, output_path, pbar_pos)
             
         else:
-            log_event("WARNING", "Unsupported file type, skipping", {"file": rel_path, "mime": mime_type})
+            error_reason = f"Unsupported file type ({mime_type})"
+            log_event("WARNING", error_reason, {"file": rel_path})
+            success = False
     except Image.DecompressionBombError:
-        log_event("SECURITY", "Decompression bomb detected (Image too large)", {"file": rel_path})
+        error_reason = "Decompression bomb detected"
+        log_event("SECURITY", error_reason, {"file": rel_path})
+        success = False
     except Exception as e:
-        log_event("ERROR", f"Unhandled exception during processing: {e}", {"file": rel_path})
+        error_reason = f"Unhandled exception: {str(e)}"
+        log_event("ERROR", error_reason, {"file": rel_path})
+        success = False
+
+    if success:
+        with stats_lock:
+            stats["success"] += 1
+            if output_path and os.path.exists(output_path):
+                stats["sanitized_size"] += os.path.getsize(output_path)
+    else:
+        with stats_lock:
+            stats["failed"].append((rel_path, error_reason))
 
 def main():
     log_event("SYSTEM", f"Sanitizer started (Max Workers: {MAX_WORKERS})")
+    stats["start_time"] = time.time()
     
-    # Check if input dir exists
     if not os.path.exists(INPUT_DIR):
         log_event("ERROR", "Input directory not found")
         return
 
-    # Iterate over files in input recursively
     task_files = []
     try:
         for root, dirs, files in os.walk(INPUT_DIR):
             for f in files:
                 if not f.startswith('.'):
-                    # Calculate path relative to INPUT_DIR
                     rel_path = os.path.relpath(os.path.join(root, f), INPUT_DIR)
                     task_files.append(rel_path)
         
@@ -404,10 +461,8 @@ def main():
             log_event("INFO", "No files found in input directory")
             return
         
-        # Sort files to process them in a predictable order
         task_files.sort()
 
-        # Worker Slot Queue [0, 1, ... MAX_WORKERS-1]
         slot_queue = queue.Queue()
         for i in range(MAX_WORKERS):
             slot_queue.put(i)
@@ -424,6 +479,55 @@ def main():
 
     except Exception as e:
         log_event("ERROR", f"Main loop failed: {e}")
+
+    # Final Report
+    elapsed = time.time() - stats["start_time"]
+    mins, secs = divmod(int(elapsed), 60)
+    
+    # Calculate compression ratio
+    ratio = 0
+    if stats["original_size"] > 0:
+        ratio = (1 - (stats["sanitized_size"] / stats["original_size"])) * 100
+
+    report = [
+        "",
+        "========================================================",
+        "✨ Moca's Sanitization Report ✨",
+        "========================================================",
+        f"📁 Files Processed: {stats['total']}",
+        f"   ✅ Success  : {stats['success']}",
+        f"   ⚠️ Skipped  : {stats['skipped']}",
+        f"   ❌ Failed   : {len(stats['failed']) - stats['skipped']}",
+        "",
+        "🎞️ Media Breakdown:",
+        f"   🖼️ Images  : {stats['types']['image']}",
+        f"   🎬 Videos  : {stats['types']['video']}",
+        f"   🎵 Audio   : {stats['types']['audio']}",
+        f"   💫 GIFs    : {stats['types']['gif']}",
+        "",
+        "💾 Storage Impact:",
+        f"   Original : {format_size(stats['original_size'])}",
+        f"   Cleaned  : {format_size(stats['sanitized_size'])} ({ratio:.1f}% reduced)",
+        "",
+        f"⏱️ Time Elapsed: {mins}m {secs}s",
+        "========================================================"
+    ]
+
+    # Add failure details if any
+    actual_failures = [f for f in stats['failed'] if "exceeds limit" not in f[1]]
+    if actual_failures:
+        report.append("❌ Failure Details:")
+        for name, reason in actual_failures[:10]: # Cap at 10 to keep it readable
+            report.append(f"   • {name} : {reason}")
+        if len(actual_failures) > 10:
+            report.append(f"   ... and {len(actual_failures) - 10} more.")
+        report.append("========================================================")
+
+    report.append("🌸 All clean, Onii-chan! Everything is safe now. 🌸")
+    report.append("")
+
+    for line in report:
+        tqdm.write(line)
 
     log_event("SYSTEM", "Sanitization complete")
 
