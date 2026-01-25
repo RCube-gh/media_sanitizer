@@ -1,5 +1,6 @@
 import os
 import sys
+import io
 import uuid
 import json
 import subprocess
@@ -165,6 +166,10 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
         # Read as binary to avoid decoding errors from garbage metadata
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
+        # Wrap stderr to handle text decoding safely with errors='ignore' and universal newlines
+        # this ensures we catch \r updates from ffmpeg and don't crash on bad chars
+        stderr_reader = io.TextIOWrapper(process.stderr, encoding='utf-8', errors='ignore', newline="")
+
         filename = os.path.basename(input_path)
         pbar = None
         if duration:
@@ -192,22 +197,27 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
                     except: pass
                 return False
 
-            line_bytes = process.stderr.readline()
-            if not line_bytes and process.poll() is not None:
+            # Read from the wrapper. 
+            # Note: ffmpeg uses \r for updates. TextIOWrapper with newline="" handles this,
+            # but readline might still wait for \n in some implementations. 
+            # However, ffmpeg usually outputs \n periodically or at end.
+            # To be safe for \r, we can read char by char or use a loop.
+            # But standard iteration often works with universal newlines.
+            # Let's try reading a chunk or line.
+            
+            # Simple fallback: readline with universal newline support usually handles \r as a line end
+            line = stderr_reader.readline()
+            
+            if not line and process.poll() is not None:
                 break
             
-            if line_bytes:
-                # Only decode for progress parsing, ignore garbage
-                try:
-                    line = line_bytes.decode('utf-8', errors='ignore')
-                    match = time_pattern.search(line)
-                    if match and pbar and duration:
-                        h, m, s = match.groups()
-                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-                        pbar.n = min(current_seconds, duration)
-                        pbar.refresh()
-                except:
-                    pass
+            if line:
+                match = time_pattern.search(line)
+                if match and pbar and duration:
+                    h, m, s = match.groups()
+                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    pbar.n = min(current_seconds, duration)
+                    pbar.refresh()
 
         if pbar: pbar.close()
         
@@ -239,6 +249,7 @@ def sanitize_audio(input_path, output_path, pbar_pos=0):
         duration = get_video_duration(input_path)
         # Read as binary
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stderr_reader = io.TextIOWrapper(process.stderr, encoding='utf-8', errors='ignore', newline="")
         
         filename = os.path.basename(input_path)
         pbar = None
@@ -266,21 +277,17 @@ def sanitize_audio(input_path, output_path, pbar_pos=0):
                     except: pass
                 return False
 
-            line_bytes = process.stderr.readline()
-            if not line_bytes and process.poll() is not None:
+            line = stderr_reader.readline()
+            if not line and process.poll() is not None:
                 break
             
-            if line_bytes:
-                try:
-                    line = line_bytes.decode('utf-8', errors='ignore')
-                    match = time_pattern.search(line)
-                    if match and pbar and duration:
-                        h, m, s = match.groups()
-                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-                        pbar.n = min(current_seconds, duration)
-                        pbar.refresh()
-                except:
-                    pass
+            if line:
+                match = time_pattern.search(line)
+                if match and pbar and duration:
+                    h, m, s = match.groups()
+                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    pbar.n = min(current_seconds, duration)
+                    pbar.refresh()
 
         if pbar: pbar.close()
         
@@ -310,6 +317,7 @@ def sanitize_gif(input_path, output_path, pbar_pos=0):
         # GIFs can be treated as videos
         duration = get_video_duration(input_path)
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stderr_reader = io.TextIOWrapper(process.stderr, encoding='utf-8', errors='ignore', newline="")
         
         filename = os.path.basename(input_path)
         pbar = None
@@ -331,21 +339,17 @@ def sanitize_gif(input_path, output_path, pbar_pos=0):
                     except: pass
                 return False
 
-             line_bytes = process.stderr.readline()
-             if not line_bytes and process.poll() is not None:
+             line = stderr_reader.readline()
+             if not line and process.poll() is not None:
                 break
             
-             if line_bytes:
-                try:
-                    line = line_bytes.decode('utf-8', errors='ignore')
-                    match = time_pattern.search(line)
-                    if match and pbar and duration:
-                        h, m, s = match.groups()
-                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-                        pbar.n = min(current_seconds, duration)
-                        pbar.refresh()
-                except:
-                    pass
+             if line:
+                match = time_pattern.search(line)
+                if match and pbar and duration:
+                    h, m, s = match.groups()
+                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                    pbar.n = min(current_seconds, duration)
+                    pbar.refresh()
         
         if pbar: pbar.close()
 
