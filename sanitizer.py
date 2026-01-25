@@ -106,7 +106,6 @@ def get_video_duration(input_path):
         '-of', 'default=noprint_wrappers=1:nokey=1', 
         input_path
     ]
-    ]
     try:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='replace', timeout=10)
         return float(result.stdout.strip())
