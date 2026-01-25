@@ -106,8 +106,9 @@ def get_video_duration(input_path):
         '-of', 'default=noprint_wrappers=1:nokey=1', 
         input_path
     ]
+    ]
     try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', errors='replace', timeout=10)
         return float(result.stdout.strip())
     except (ValueError, subprocess.SubprocessError):
         return None
@@ -162,7 +163,8 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
         ]
         
         duration = get_video_duration(input_path)
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
+        # Read as binary to avoid decoding errors from garbage metadata
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         filename = os.path.basename(input_path)
         pbar = None
@@ -191,17 +193,22 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
                     except: pass
                 return False
 
-            line = process.stderr.readline()
-            if not line and process.poll() is not None:
+            line_bytes = process.stderr.readline()
+            if not line_bytes and process.poll() is not None:
                 break
             
-            if line:
-                match = time_pattern.search(line)
-                if match and pbar and duration:
-                    h, m, s = match.groups()
-                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-                    pbar.n = min(current_seconds, duration)
-                    pbar.refresh()
+            if line_bytes:
+                # Only decode for progress parsing, ignore garbage
+                try:
+                    line = line_bytes.decode('utf-8', errors='ignore')
+                    match = time_pattern.search(line)
+                    if match and pbar and duration:
+                        h, m, s = match.groups()
+                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                        pbar.n = min(current_seconds, duration)
+                        pbar.refresh()
+                except:
+                    pass
 
         if pbar: pbar.close()
         
@@ -210,7 +217,7 @@ def sanitize_video(input_path, output_path, pbar_pos=0):
             return True
         else:
             # Consume remaining stderr if any
-            err_output = process.stderr.read()
+            err_output = process.stderr.read().decode('utf-8', errors='ignore')
             log_event("ERROR", f"Video sanitization failed: {err_output}", {"file": input_path})
             return False
 
@@ -231,7 +238,8 @@ def sanitize_audio(input_path, output_path, pbar_pos=0):
         ]
         
         duration = get_video_duration(input_path)
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
+        # Read as binary
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         filename = os.path.basename(input_path)
         pbar = None
@@ -259,17 +267,21 @@ def sanitize_audio(input_path, output_path, pbar_pos=0):
                     except: pass
                 return False
 
-            line = process.stderr.readline()
-            if not line and process.poll() is not None:
+            line_bytes = process.stderr.readline()
+            if not line_bytes and process.poll() is not None:
                 break
             
-            if line:
-                match = time_pattern.search(line)
-                if match and pbar and duration:
-                    h, m, s = match.groups()
-                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-                    pbar.n = min(current_seconds, duration)
-                    pbar.refresh()
+            if line_bytes:
+                try:
+                    line = line_bytes.decode('utf-8', errors='ignore')
+                    match = time_pattern.search(line)
+                    if match and pbar and duration:
+                        h, m, s = match.groups()
+                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                        pbar.n = min(current_seconds, duration)
+                        pbar.refresh()
+                except:
+                    pass
 
         if pbar: pbar.close()
         
@@ -277,7 +289,7 @@ def sanitize_audio(input_path, output_path, pbar_pos=0):
             log_event("SUCCESS", "Audio sanitized successfully", {"input": input_path, "output": output_path})
             return True
         else:
-            err_output = process.stderr.read()
+            err_output = process.stderr.read().decode('utf-8', errors='ignore')
             log_event("ERROR", f"Audio sanitization failed: {err_output}", {"file": input_path})
             return False
 
@@ -298,7 +310,7 @@ def sanitize_gif(input_path, output_path, pbar_pos=0):
         
         # GIFs can be treated as videos
         duration = get_video_duration(input_path)
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, encoding='utf-8')
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         filename = os.path.basename(input_path)
         pbar = None
@@ -320,17 +332,21 @@ def sanitize_gif(input_path, output_path, pbar_pos=0):
                     except: pass
                 return False
 
-             line = process.stderr.readline()
-             if not line and process.poll() is not None:
+             line_bytes = process.stderr.readline()
+             if not line_bytes and process.poll() is not None:
                 break
             
-             if line:
-                match = time_pattern.search(line)
-                if match and pbar and duration:
-                    h, m, s = match.groups()
-                    current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
-                    pbar.n = min(current_seconds, duration)
-                    pbar.refresh()
+             if line_bytes:
+                try:
+                    line = line_bytes.decode('utf-8', errors='ignore')
+                    match = time_pattern.search(line)
+                    if match and pbar and duration:
+                        h, m, s = match.groups()
+                        current_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+                        pbar.n = min(current_seconds, duration)
+                        pbar.refresh()
+                except:
+                    pass
         
         if pbar: pbar.close()
 
