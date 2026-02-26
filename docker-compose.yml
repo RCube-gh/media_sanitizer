@@ -18,8 +18,15 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    cap_add:
+      - DAC_OVERRIDE
     read_only: true
     tmpfs:
       - /tmp
+    environment:
+      - TMPDIR=/tmp
+      - TEMP=/tmp
+      - TMP=/tmp
+      - PYTHONDONTWRITEBYTECODE=1
     # Keep container alive for debugging if needed, or just let it run the CMD
     # command: python sanitizer.py
