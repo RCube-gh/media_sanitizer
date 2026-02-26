@@ -1,32 +1,32 @@
 services:
-  sanitizer:
-    build: .
-    container_name: moca_sanitizer
-    network_mode: none # 🛡️ COMPLETE ISOLATION
-    volumes:
-      - ./input:/app/input:ro # Read-only input
-      - ./output:/app/output:rw # Write-only output
-      # Mount the script for easier development/testing without rebuilding
-      - ./sanitizer.py:/app/sanitizer.py:ro
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-          pids: 128
-    # S-Grade Security Hardening 🔒
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - DAC_OVERRIDE
-    read_only: true
-    tmpfs:
-      - /tmp
-    environment:
-      - TMPDIR=/tmp
-      - TEMP=/tmp
-      - TMP=/tmp
-      - PYTHONDONTWRITEBYTECODE=1
-    # Keep container alive for debugging if needed, or just let it run the CMD
-    # command: python sanitizer.py
+    sanitizer:
+        build: .
+        container_name: moca_sanitizer
+        network_mode: none # 🛡️ COMPLETE ISOLATION
+        volumes:
+            - ./input:/app/input:ro # Read-only input
+            - ./output:/app/output:rw # Write-only output
+            # Mount the script for easier development/testing without rebuilding
+            - ./sanitizer.py:/app/sanitizer.py:ro
+        deploy:
+            resources:
+                limits:
+                    memory: 4G
+                    pids: 1024
+        # S-Grade Security Hardening 🔒
+        security_opt:
+            - no-new-privileges:true
+        cap_drop:
+            - ALL
+        cap_add:
+            - DAC_OVERRIDE
+        read_only: true
+        tmpfs:
+            - /tmp
+        environment:
+            - TMPDIR=/tmp
+            - TEMP=/tmp
+            - TMP=/tmp
+            - PYTHONDONTWRITEBYTECODE=1
+        # Keep container alive for debugging if needed, or just let it run the CMD
+        # command: python sanitizer.py
